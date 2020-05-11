@@ -1,0 +1,364 @@
+%% Probing Kinetic and Dynamic Differences in NET-seq Clusters
+%% Generating a NET-seq gene-matrix
+
+NETseq_Data = importdata('/media/sedm5436/Elements/TOM_BROWN/Elongation_clustering/Scer_analysis/raw_data/fischl_WT_D_NETseq.mat');
+harry_annotations = importdata('/media/sedm5436/Elements/TOM_BROWN/Elongation_clustering/Scer_analysis/gene_annotations/harry_annotations.mat');
+
+num_bins = 1000;
+
+%removing overlapping genes
+
+chosen_annotations = remove_overlapping(harry_annotations);
+
+%Overlapping genes contain an internal transcriptional start site, which
+%will affect our results
+
+% Select only genes > 1000bp;
+for chr=1:size(harry_annotations,1)
+    for strand=1:2
+        idx = abs(chosen_annotations{chr,strand}(:,1)-chosen_annotations{chr,strand}(:,2))>1000;
+        chosen_annotations{chr,strand} = chosen_annotations{chr,strand}(idx,:);
+        chosen_annotations{chr,strand+2} = chosen_annotations{chr,strand+2}(idx);
+    end
+end
+
+%Small (<1000bp) genes will terminate within our target window, affecting
+%our results
+
+tic;
+chosen_annotations = find_expressingGenes(chosen_annotations,NETseq_Data,num_bins);
+toc
+
+%Expressing genes are defined as those with a greater total NET-seq reads
+%than the genomic background
+
+num_genes = 0;
+for chr=1:size(harry_annotations,1)
+    for strand=1:2
+        num_genes = num_genes + size(chosen_annotations{chr,strand},1);
+    end
+end
+
+NETseq_matrix = nan(num_genes,num_bins);
+NETseq_geneNames = cell(num_genes,1);
+NETseq_TotalReads = zeros(num_genes,1);
+NETseq_genelength = zeros(num_genes,1);
+
+k=1;
+for chr=1:16
+    strand=1;
+    for gene=1:size(chosen_annotations{chr,strand},1)
+        TU_start = min(chosen_annotations{chr,strand}(gene,1),chosen_annotations{chr,strand}(gene,2));
+        TU_end= max(chosen_annotations{chr,strand}(gene,1),chosen_annotations{chr,strand}(gene,2));
+        NETseq_matrix(k,1:num_bins)=bin_data(NETseq_Data{chr,strand}(TU_start:TU_start+999)',num_bins);
+        NETseq_geneNames{k}=chosen_annotations{chr,strand+2}{gene};
+        NETseq_TotalReads(k,1)= sum(NETseq_Data{chr,strand}(TU_start:TU_end));
+        NETseq_genelength(k,1) = abs(TU_start-TU_end);
+        k=k+1;
+    end
+    
+    strand=2;
+    for gene=1:size(chosen_annotations{chr,strand},1)
+        TU_start = min(chosen_annotations{chr,strand}(gene,1),chosen_annotations{chr,strand}(gene,2));
+        TU_end= max(chosen_annotations{chr,strand}(gene,1),chosen_annotations{chr,strand}(gene,2));
+        NETseq_matrix(k,1:num_bins)=bin_data(fliplr(NETseq_Data{chr,strand}(TU_end-999:TU_end)'),num_bins);
+        NETseq_geneNames{k}=chosen_annotations{chr,strand+2}{gene};
+        NETseq_TotalReads(k,1)= sum(fliplr(NETseq_Data{chr,strand}(TU_start:TU_end)));
+        NETseq_genelength(k,1) = abs(TU_start-TU_end);
+        k=k+1;
+    end
+    disp(chr);
+end
+
+%Here we have generated a NET-seq matrix of the first 1000bp of the list of
+%genes
+
+%% Loading Dynamic and Kinetic Parameters
+
+NETseqGeneParamsBinned = importdata('/data/sedm5436_simulation_outputs/SCer_2_NETseqGeneParamsBinned.mat');
+Optimal_Parameters = NETseqGeneParamsBinned {1,7} ;
+synthrates = importdata('/media/sedm5436/Elements/AKSEL_SP/cDTA_Cramer_synthesisrates_NaNs');
+synthrates.data = synthrates.data(:,3) ;
+synthrates.textdata = synthrates.textdata(2:end,1) ;
+degrates = importdata('/media/sedm5436/Elements/AKSEL_SP/cDTA_Cramer_decayrates_NaNs');
+degrates.data = degrates.data(:,3) ;
+degrates.textdata = degrates.textdata(2:end,1);
+halflives= log(2)./(degrates.data) ;
+
+Dynamic_Parameters = nan(num_genes,6);
+for g=1:num_genes
+    Dynamic_Parameters(g,1) = Optimal_Parameters(g,11); % Window 1
+    Dynamic_Parameters(g,2) = Optimal_Parameters(g,12); % Termination
+    Dynamic_Parameters(g,3) = Optimal_Parameters(g,1) ./ Optimal_Parameters(g,2); %IE Ratio
+    Dynamic_Parameters(g,4) = (Optimal_Parameters(g,4)+Optimal_Parameters(g,5))/((Optimal_Parameters(g,3)*(1+(Optimal_Parameters(g,5)/Optimal_Parameters(g,6))))+Optimal_Parameters(g,4)+Optimal_Parameters(g,5)); %Window 1 Moving
+    Dynamic_Parameters(g,5) = (Optimal_Parameters(g,8)+Optimal_Parameters(g,9))/((Optimal_Parameters(g,7)*(1+(Optimal_Parameters(g,9)/Optimal_Parameters(g,10))))+Optimal_Parameters(g,8)+Optimal_Parameters(g,9)); %Window_2 Moving
+    Dynamic_Parameters(g,6) = Optimal_Parameters(g,15) / Optimal_Parameters(g,13) ; %Processivity
+end
+
+%This table represents the outputs of TOMS SIMULATION
+
+Kinetic_Parameters = nan(length(NETseq_geneNames),4);
+
+for g=1:length(NETseq_geneNames)
+    idx = find(strcmp(degrates.textdata(:,1),NETseq_geneNames(g,1)));
+    if ~isempty(idx)
+        idx=idx(1);
+        Kinetic_Parameters(g,1) = degrates.data(idx);
+        Kinetic_Parameters(g,2) = synthrates.data(idx);
+        Kinetic_Parameters(g,3) = halflives(idx) ;
+        Kinetic_Parameters(g,4) = Kinetic_Parameters(g,2) ./ Kinetic_Parameters(g,1) ;
+    end
+end
+
+%This table represents the output of the DTA kinetic modelling 
+
+%% Clustering NET-seq Profile Shapes
+
+ SCer_NETseq_matrixNorm=zeros(size(NETseq_matrix));
+for g=1:size(NETseq_matrix,1)
+     SCer_NETseq_matrixNorm(g,:) = NETseq_matrix(g,:)-mean(NETseq_matrix(g,:));
+     SCer_NETseq_matrixNorm(g,:) = SCer_NETseq_matrixNorm(g,:)/std(SCer_NETseq_matrixNorm(g,:));
+ end
+k_means_SCer_NETseqIdx = cell(1,20);
+sorted_kMeansIdx_SCer_NETseq = cell(1,20);
+sorted_kMeans_SCer_NETseq = cell(1,20);
+
+for k=1:3
+    k_means_SCer_NETseqIdx{k} = kmeans(SCer_NETseq_matrixNorm,k);
+    [sorted_kMeans_SCer_NETseq{k},sorted_kMeansIdx_SCer_NETseq{k}] = sort(k_means_SCer_NETseqIdx{k});
+    
+    figure();
+    subplot(k,2,([1:k]*2));
+    sorted_heatmap = SCer_NETseq_matrixNorm(sorted_kMeansIdx_SCer_NETseq{k},:);
+    sorted_heatmap = sorted_heatmap(~isnan(sorted_heatmap(:,1)),:);
+    yticks = hist(sorted_kMeans_SCer_NETseq{k},k);
+    cum_yticks = [0 cumsum(yticks)];
+    imagesc(sorted_heatmap,[-0.1 0]);
+    colormap(1-(bsxfun(@times,gray,[1 1 0])));
+    gca;
+    title(['HeLa mNETseq, K = ',num2str(k)]);
+    ax=gca;
+    ax.XTick = [1 500 1000];
+    ax.XTickLabel = {'TSS','+500','+1000'};
+    for j=2:k
+        hold on;
+        plot([1 1000],[cum_yticks(j) cum_yticks(j)],'k')
+    end
+    
+     subplot(k,3,([1:k]*3));
+     sorted_heatmapRaw = NETseq_matrix(sorted_kMeansIdx_SCer_NETseq{k},:);
+     sorted_heatmapRaw = sorted_heatmapRaw(sum(sorted_heatmapRaw,2)>0,:);
+     imagesc(sorted_heatmapRaw,[0 20]);
+     colormap(1-(bsxfun(@times,gray,[1 1 0])));
+     gca;
+     ax=gca;
+     ax.XTick = [1 500 1000];
+     ax.XTickLabel = {'TSS','+500','+1000'};
+     for j=2:k
+         hold on;
+         plot([1 1000],[cum_yticks(j) cum_yticks(j)],'k')
+     end
+    
+    for j=1:k
+        subplot(k,2,2*j-1);
+        plot(mean(sorted_heatmap(cum_yticks(j)+1:cum_yticks(j+1),:),1));
+        ylim([-0.2 2.2]);
+        ax=gca;
+        ax.XTick = [1 500 1000];
+        ax.XTickLabel = {'TSS','+500','+1000'};
+    end
+    
+end
+
+%The k_means_SCer_NETseqIdx structure represents the members of each
+%cluster. These are clustered to profile shape, which can be seen as a
+%proxy for the dynamic properties of the polymerase at that gene
+
+Cluster1_Names= NETseq_geneNames(k_means_SCer_NETseqIdx{3}==1);
+Cluster2_Names= NETseq_geneNames(k_means_SCer_NETseqIdx{3}==2);
+Cluster3_Names= NETseq_geneNames(k_means_SCer_NETseqIdx{3}==3);
+
+%% Output dynamics means
+
+dynamics_means = nan(3,6) ;
+for parameters = 1:6
+    for clusters = 1:3
+        dynamics_means(clusters,parameters) = mean(Dynamic_Parameters((k_means_SCer_NETseqIdx{1,3}==clusters),parameters));
+    end
+end
+
+kinetic_means = nan(3,3) ;
+for parameters = 1:3
+    for clusters = 1:3
+        kinetic_means(clusters,parameters) = mean(Kinetic_Parameters((k_means_SCer_NETseqIdx{1,3}==clusters),parameters));
+    end
+end
+
+%% How Do kinetics relate to cluster
+
+figure
+subplot(1,3,1)
+scatter(log(Kinetic_Parameters(k_means_SCer_NETseqIdx{3}==1,2)),log(Kinetic_Parameters(k_means_SCer_NETseqIdx{3}==1,3)),'.b')
+title('Cluster 1')
+xlabel('log(Synthesis Rate)')
+ylabel('log(Decay Rate)')
+subplot(1,3,2)
+scatter(log(Kinetic_Parameters(k_means_SCer_NETseqIdx{3}==2,2)),log(Kinetic_Parameters(k_means_SCer_NETseqIdx{3}==2,1)),'.b')
+title('Cluster 2')
+xlabel('log(Synthesis Rate)')
+ylabel('log(Decay Rate)')
+subplot(1,3,3)
+scatter(log(Kinetic_Parameters(k_means_SCer_NETseqIdx{3}==3,2)),log(Kinetic_Parameters(k_means_SCer_NETseqIdx{3}==3,1)),'.b')
+title('Cluster 3')
+xlabel('log(Synthesis Rate)')
+ylabel('log(Decay Rate)')
+
+%% Comparing mean Kinetics
+figure
+subplot(1,3,1)
+boxplot(log(Kinetic_Parameters(:,2)),k_means_SCer_NETseqIdx{3},'Notch','on')
+xlabel('Cluster','fontsize',24)
+ylabel('Synthesis Rate','fontsize',24)
+subplot(1,3,2)
+boxplot(log(Kinetic_Parameters(:,1)),k_means_SCer_NETseqIdx{3},'Notch','on')
+xlabel('Cluster','fontsize',24)
+ylabel('Decay Rate','fontsize',24)
+subplot(1,3,3)
+boxplot(log(Kinetic_Parameters(:,2)./Kinetic_Parameters(:,1)),k_means_SCer_NETseqIdx{3},'Notch','on')
+xlabel('Cluster','fontsize',24)
+ylabel('Syntheis Rate/Decay Rate','fontsize',24)
+
+figure
+subplot(1,4,1)
+boxplot(log(Dynamic_Parameters(:,3)),k_means_SCer_NETseqIdx{3},'Notch','on')
+xlabel('Cluster','fontsize',24)
+ylabel('IE Ratio','fontsize',24)
+subplot(1,4,2)
+boxplot(log(Dynamic_Parameters(:,4)),k_means_SCer_NETseqIdx{3},'Notch','on')
+xlabel('Cluster','fontsize',24)
+ylabel('Moving Ratio Window 1','fontsize',24)
+subplot(1,4,3)
+boxplot(log(Dynamic_Parameters(:,5)),k_means_SCer_NETseqIdx{3},'Notch','on')
+xlabel('Cluster','fontsize',24)
+ylabel('Moving Ratio Window 2','fontsize',24)
+subplot(1,4,4)
+boxplot(log(Dynamic_Parameters(:,6)),k_means_SCer_NETseqIdx{3},'Notch','on')
+xlabel('Cluster','fontsize',24)
+ylabel('Processivity','fontsize',24)
+
+%% KINETIC METRICS
+
+kinetic_metrics = zeros(3,9);
+
+for clusters = 1:3
+    kinetic_metrics(clusters,1) = nanmean(Kinetic_Parameters(k_means_SCer_NETseqIdx{3}==clusters,2));
+    kinetic_metrics(clusters,2) = 1.96*(nanstd(Kinetic_Parameters(k_means_SCer_NETseqIdx{3}==clusters,2))/sqrt(length(k_means_SCer_NETseqIdx{3}==clusters)));
+   
+    kinetic_metrics(clusters,3) = nanmean(Kinetic_Parameters(k_means_SCer_NETseqIdx{3}==clusters,1));
+    kinetic_metrics(clusters,4) = 1.96*(nanstd(Kinetic_Parameters(k_means_SCer_NETseqIdx{3}==clusters,1))/sqrt(length(k_means_SCer_NETseqIdx{3}==clusters)));
+   
+    kinetic_metrics(clusters,5) = nanmean(Kinetic_Parameters(k_means_SCer_NETseqIdx{3}==clusters,4));
+    kinetic_metrics(clusters,6) = 1.96*(nanstd(Kinetic_Parameters(k_means_SCer_NETseqIdx{3}==clusters,4))/sqrt(length(k_means_SCer_NETseqIdx{3}==clusters)));
+end
+
+figure
+for parameters= 1:3
+    subplot(1,3,parameters)
+    bar(kinetic_metrics(:,(parameters*2)-1))
+    xlabel('cluster')
+    
+    if parameters==1
+        ylabel('Synthesis Rate')
+    elseif parameters==2
+        ylabel('Decay Rate')
+    elseif parameters==3
+        ylabel('Syntheis Rate/Decay Rate')
+    end
+    
+    hold on
+    
+    er1= errorbar(1,kinetic_metrics(1,((parameters*2)-1)),kinetic_metrics(1,(parameters*2)));
+    er1.Color = [0 0 0];
+    er1.LineStyle = 'none';
+    er2= errorbar(2,kinetic_metrics(2,((parameters*2)-1)),kinetic_metrics(2,(parameters*2)));
+    er2.Color = [0 0 0];
+    er2.LineStyle = 'none';
+    er3= errorbar(3,kinetic_metrics(3,((parameters*2)-1)),kinetic_metrics(3,(parameters*2)));
+    er3.Color = [0 0 0];
+    er3.LineStyle = 'none';
+    
+    hold off
+    
+end
+
+[~,~,synth_stats]=anova1(Kinetic_Parameters(:,2),k_means_SCer_NETseqIdx{3}); 
+synth_results = multcompare(synth_stats);
+[~,~,decay_stats]=anova1(Kinetic_Parameters(:,1),k_means_SCer_NETseqIdx{3}); 
+decay_results = multcompare(decay_stats);
+[~,~,synthdeg_stats]=anova1(Kinetic_Parameters(:,4),k_means_SCer_NETseqIdx{3});
+synthdeg_results = multcompare(synthdeg_stats);
+
+% These statistical multi-comparisons show how the different clusters
+% change in regards to their kinetic properties.
+
+%% DYNAMIC METRICS
+
+dynamic_metrics = zeros(3,8);
+
+for clusters = 1:3
+    dynamic_metrics(clusters,1) = nanmean(Dynamic_Parameters(k_means_SCer_NETseqIdx{3}==clusters,3));   %IE
+    dynamic_metrics(clusters,2) = 1.96*(nanstd(Dynamic_Parameters(k_means_SCer_NETseqIdx{3}==clusters,3))/sqrt(length(k_means_SCer_NETseqIdx{3}==clusters)));
+   
+    dynamic_metrics(clusters,3) = nanmean(Dynamic_Parameters(k_means_SCer_NETseqIdx{3}==clusters,4));   %Moving 1
+    dynamic_metrics(clusters,4) = 1.96*(nanstd(Dynamic_Parameters(k_means_SCer_NETseqIdx{3}==clusters,4))/sqrt(length(k_means_SCer_NETseqIdx{3}==clusters)));
+   
+    dynamic_metrics(clusters,5) = nanmean(Dynamic_Parameters(k_means_SCer_NETseqIdx{3}==clusters,5));   %Moving 2
+    dynamic_metrics(clusters,6) = 1.96*(nanstd(Dynamic_Parameters(k_means_SCer_NETseqIdx{3}==clusters,5))/sqrt(length(k_means_SCer_NETseqIdx{3}==clusters)));
+    
+    dynamic_metrics(clusters,7) = nanmean(Dynamic_Parameters(k_means_SCer_NETseqIdx{3}==clusters,6));   %Processivity
+    dynamic_metrics(clusters,8) = 1.96*(nanstd(Dynamic_Parameters(k_means_SCer_NETseqIdx{3}==clusters,6))/sqrt(length(k_means_SCer_NETseqIdx{3}==clusters)));
+end
+
+figure
+for parameters= 1:4
+    subplot(1,4,parameters)
+    bar(dynamic_metrics(:,(parameters*2)-1))
+    xlabel('cluster')
+    
+    if parameters==1
+        ylabel('Initiation Rate / Elongation Rate')
+    elseif parameters==2
+        ylabel('Window 1 Moving Ratio')
+    elseif parameters==3
+        ylabel('Window 2 Moving Ratio')
+    elseif parameters==4
+        ylabel('Processivity')
+    end
+    
+    hold on
+    
+    er1= errorbar(1,dynamic_metrics(1,((parameters*2)-1)),dynamic_metrics(1,(parameters*2)));
+    er1.Color = [0 0 0];                            
+    er1.LineStyle = 'none';  
+    er2= errorbar(2,dynamic_metrics(2,((parameters*2)-1)),dynamic_metrics(2,(parameters*2)));
+    er2.Color = [0 0 0];                            
+    er2.LineStyle = 'none';  
+    er3= errorbar(3,dynamic_metrics(3,((parameters*2)-1)),dynamic_metrics(3,(parameters*2)));
+    er3.Color = [0 0 0];                            
+    er3.LineStyle = 'none'; 
+    
+    hold off
+end
+
+[~,~,IE_stats]=anova1(Dynamic_Parameters(:,3),k_means_SCer_NETseqIdx{3}); 
+IE_results = multcompare(IE_stats);
+[~,~,Moving1_stats]=anova1(Dynamic_Parameters(:,4),k_means_SCer_NETseqIdx{3}); 
+Moving1_results = multcompare(Moving1_stats);
+[~,~,Moving2_stats]=anova1(Dynamic_Parameters(:,5),k_means_SCer_NETseqIdx{3});
+Moving2_results = multcompare(Moving2_stats);
+[~,~,Processivity_stats]=anova1(Dynamic_Parameters(:,6),k_means_SCer_NETseqIdx{3});
+Processivity_results = multcompare(Processivity_stats);
+
+%This Analysis shows how the dynamic parameters (as calculated by Tom)
+%shift between NETseq clusters, reflecting their different profile shapes
+
