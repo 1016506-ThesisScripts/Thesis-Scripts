@@ -1,0 +1,272 @@
+%% LOAD DATA
+
+mNETseq_K562= importdata('/media/sedm5436/Elements/AKSEL_SP/K562_Matricies/Cramer_K562_mNETseq.mat');
+Rates_K562 = split(importdata ('/media/sedm5436/Elements/AKSEL_SP/Cramer Raw Data/Cramer_transcript.annotation.gtf'),[";","	","	.	"]);
+Rates_K562 = split(importdata ('/media/sedm5436/Elements/AKSEL_SP/Cramer Raw Data/Cramer_transcript.annotation.gtf'),[";","	","	.	"]);
+Protein_Coding_Cramer_Data = Rates_K562(strcmp(Rates_K562(:,11),'GENCODE "TRUE"')& strcmp(Rates_K562(:,3),'protein_coding'),:) ;
+SynthDeg_Rates= str2double(erase(Protein_Coding_Cramer_Data(:,9:10),["decay rate","synthesis rate",""""]));
+load /media/sedm5436/Elements/AKSEL_SP/Snu-seq_project_data/GENCODE_ProteinEncoding_v22.mat
+genes = GENCODE_ProteinEncoding_v22(1:24,:);
+Optimal_Parameters = importdata('/media/sedm5436/Elements/AKSEL_SP/K562_Matricies/K562_mNETseqGeneParamsBinned.mat');
+Optimal_Parameters= Optimal_Parameters{1,7} ;
+RNAseq_K562 = importdata('/media/sedm5436/Elements/AKSEL_SP/K562_Matricies/Cramer_K562_RNAseq.mat');
+
+%% Calculating SNU-seq Enrichment (5MIN FRACTION)
+AR_sum = 1 ;
+k=1;
+for chr=1:size(genes,1)
+    strand=1;
+    try
+        for gene=1:size(genes{chr,strand},1)
+            gene_length = abs(genes{chr,strand}(gene,1)-genes{chr,strand}(gene,2));
+            TU_start = min(genes{chr,strand}(gene,1),genes{chr,strand}(gene,2));
+            TU_end= max(genes{chr,strand}(gene,1),genes{chr,strand}(gene,2));
+            RNAseq_reads = sum(RNAseq_K562{chr,strand}(TU_start:TU_end));
+            RNAseq_GeneNames(k,1) = strtrim(genes{chr,strand+2}(gene));
+            AR(k,1) = (RNAseq_reads * (10^3)) /gene_length ;
+            AR_sum = AR_sum + AR(k,1) ;
+            k=k+1;
+        end
+    end
+    strand=2;
+    try
+        for gene=1:size(genes{chr,strand},1)
+            gene_length = abs(genes{chr,strand}(gene,1)-genes{chr,strand}(gene,2));
+            TU_start = min(genes{chr,strand}(gene,1),genes{chr,strand}(gene,2));
+            TU_end= max(genes{chr,strand}(gene,1),genes{chr,strand}(gene,2));
+            RNAseq_reads = fliplr(sum(RNAseq_K562{chr,strand}(TU_start:TU_end)));
+            RNAseq_GeneNames(k,1) = strtrim(genes{chr,strand+2}(gene));
+            AR(k,1) = (RNAseq_reads * (10^3)) /gene_length ;
+            AR_sum = AR_sum + AR(k,1) ;
+            k=k+1;
+        end
+    end
+    disp(chr);
+end
+clear RNAseq_K562
+AR = (AR ./ AR_sum) .* 10^6 ;
+
+%% Select Genes
+
+num_bins = 1000;
+chosen_annotations = remove_overlapping(genes);
+
+% Select only genes > 1000bp;
+for chr=1:size(genes,1)
+    for strand=1:2
+        idx = abs(chosen_annotations{chr,strand}(:,1)-chosen_annotations{chr,strand}(:,2))>1000;
+        chosen_annotations{chr,strand} = chosen_annotations{chr,strand}(idx,:);
+        chosen_annotations{chr,strand+2} = chosen_annotations{chr,strand+2}(idx);
+    end
+end
+num_genes = 0;
+for chr=1:size(genes,1)
+    for strand=1:2
+        num_genes = num_genes + size(chosen_annotations{chr,strand},1);
+    end
+end
+tic;
+chosen_annotations = find_expressingGenes_intergenic(chosen_annotations,mNETseq_K562,num_bins);
+toc
+num_genes = 0;
+for chr=1:size(genes,1)
+    for strand=1:2
+        num_genes = num_genes + size(chosen_annotations{chr,strand},1);
+    end
+end
+
+%% Generate Parameters
+
+mNETseqsim_Parameters = nan(num_genes,6);
+for g=1:num_genes
+    mNETseqsim_Parameters(g,1) = Optimal_Parameters(g,11);
+    mNETseqsim_Parameters(g,2) = Optimal_Parameters(g,12);
+    mNETseqsim_Parameters(g,3) = Optimal_Parameters(g,1) / Optimal_Parameters(g,2);
+    mNETseqsim_Parameters(g,4) = (Optimal_Parameters(g,4)+Optimal_Parameters(g,5))/((Optimal_Parameters(g,3)*(1+(Optimal_Parameters(g,5)/Optimal_Parameters(g,6))))+Optimal_Parameters(g,4)+Optimal_Parameters(g,5));
+    mNETseqsim_Parameters(g,5) = (Optimal_Parameters(g,8)+Optimal_Parameters(g,9))/((Optimal_Parameters(g,7)*(1+(Optimal_Parameters(g,9)/Optimal_Parameters(g,10))))+Optimal_Parameters(g,8)+Optimal_Parameters(g,9));
+    mNETseqsim_Parameters(g,6) = Optimal_Parameters(g,15) / Optimal_Parameters(g,13) ;
+end
+
+%% Collect and Collate Data
+
+mNETseq_matrix = nan(num_genes,num_bins);
+mNETseq_geneNames = cell(num_genes,1);
+mNETseq_TPM = zeros(num_genes,1);
+mNETseq_Window_TotalReads= zeros(num_genes,2);
+mNETseq_GeneLength = zeros(num_genes,2);
+TPM_sum = 1 ;
+
+k=1;
+for chr=1:size(genes,1)
+    strand=1;
+    try
+        for gene=1:size(chosen_annotations{chr,strand},1)
+            gene_length = abs(chosen_annotations{chr,strand}(gene,1)-chosen_annotations{chr,strand}(gene,2));
+            TU_start = min(chosen_annotations{chr,strand}(gene,1),chosen_annotations{chr,strand}(gene,2));
+            TU_end= max(chosen_annotations{chr,strand}(gene,1),chosen_annotations{chr,strand}(gene,2));
+            window_boundary= mNETseqsim_Parameters(k,1);
+            mNETseq_GeneLength(k)= abs(TU_start - TU_end) ;
+            mNETseq_matrix(k,1:num_bins)=bin_data(mNETseq_K562{chr,strand}(TU_start:TU_start+999)',num_bins);
+            mNETseq_geneNames{k}=chosen_annotations{chr,strand+2}{gene};
+            mNETseq_TPM(k,1)= (sum(mNETseq_K562{chr,strand}(TU_start:TU_end))*(10^3))/abs(TU_start-TU_end);
+            TPM_sum = TPM_sum + mNETseq_TPM(k,1);
+            mNETseq_Window_TotalReads(k,1)= sum(mNETseq_K562{chr,strand}(TU_start:TU_start+window_boundary));
+            mNETseq_Window_TotalReads(k,2)= sum(mNETseq_K562{chr,strand}(TU_start+window_boundary:TU_end));
+            k=k+1;
+        end
+    end
+    try
+        strand=2;
+        for gene=1:size(chosen_annotations{chr,strand},1)
+            gene_length = abs(chosen_annotations{chr,strand}(gene,1)-chosen_annotations{chr,strand}(gene,2));
+            TU_start = min(chosen_annotations{chr,strand}(gene,1),chosen_annotations{chr,strand}(gene,2));
+            TU_end= max(chosen_annotations{chr,strand}(gene,1),chosen_annotations{chr,strand}(gene,2));
+            window_boundary= mNETseqsim_Parameters(k,1);
+            mNETseq_GeneLength(k)= abs(TU_start - TU_end) ;
+            mNETseq_matrix(k,1:num_bins)=bin_data(fliplr(mNETseq_K562{chr,strand}(TU_end-999:TU_end)'),num_bins);
+            mNETseq_geneNames{k}=chosen_annotations{chr,strand+2}{gene};
+            mNETseq_TPM(k,1)= (sum(fliplr(mNETseq_K562{chr,strand}(TU_start:TU_end)))*(10^3))/abs(TU_start-TU_end);
+            TPM_sum = TPM_sum + mNETseq_TPM(k,1);
+            mNETseq_Window_TotalReads(k,1)= sum(fliplr(mNETseq_K562{chr,strand}(TU_end-window_boundary:TU_end)));
+            mNETseq_Window_TotalReads(k,2)= sum(fliplr(mNETseq_K562{chr,strand}(TU_start:TU_end-window_boundary)));
+            k=k+1;
+        end
+    end
+    disp(chr);
+end
+
+mNETseq_TPM = (mNETseq_TPM ./ TPM_sum) .* 10^6 ;
+
+%%
+mNETseq_geneNames = strtrim(mNETseq_geneNames) ;
+metrics = nan(length(mNETseq_geneNames),4);
+
+for g=1:length(mNETseq_geneNames)
+    idx = find(strcmp(RNAseq_GeneNames(:,1),mNETseq_geneNames{g}));
+    if ~isempty(idx)
+        idx=idx(1);
+        metrics(g,1) = AR(idx);
+        metrics(g,2) = mNETseq_TPM(g);
+        metrics(g,3) = mNETseq_Window_TotalReads(g,1)/ mNETseqsim_Parameters(g,1);
+        metrics(g,4) = mNETseq_Window_TotalReads(g,2)/ (mNETseq_GeneLength(g) - mNETseqsim_Parameters(g,1)) ;
+    end
+end
+
+figure
+subplot(1,3,1);
+plot(log(metrics(:,2)),log(metrics(:,1)),'.');
+xlabel('log10 -Total mNET-seq Reads','fontsize',16);
+ylabel('log10 - RNA counts','fontsize',16);
+title(strcat('\rho = ',num2str(corr(log(metrics(:,2)),log(metrics(:,1)),'type','spearman','rows','complete'))),'fontsize',24);
+subplot(1,3,2);
+plot(log(metrics(:,3)),log(metrics(:,1)),'.');
+xlabel('log10 -Window 1 mNET-seq Reads','fontsize',16);
+ylabel('log10 - RNA counts','fontsize',16);
+title(strcat('\rho = ',num2str(corr(log(metrics(:,3)),log(metrics(:,1)),'type','spearman','rows','complete'))),'fontsize',24);
+subplot(1,3,3);
+plot(log(metrics(:,4)),log(metrics(:,1)),'.');
+xlabel('log10 -Window 2 mNET-seq Reads','fontsize',16);
+ylabel('log10 - RNA counts','fontsize',16);
+title(strcat('\rho = ',num2str(corr(log(metrics(:,4)),log(metrics(:,1)),'type','spearman','rows','complete'))),'fontsize',24);
+
+%% Generate Metrics For Comparison
+
+%Metric 1- Measured RNA seq Counts (From Churchman)
+%Metric 2- Polymerases, Total mNETseq Reads, Absolute Window at start of gene, Proportion of Window 1
+%Metric 3- Multiplyer, Pause Metric, Processivity or Initiation Rate
+%Metric 4- Degredation (From Schwalb et al.)
+%Metric 5- Synthesis (From Schwalb et al.)
+%Metric 5- Cluster (From Above)
+
+load Cramer_Names_Noblankspace.mat
+metrics = nan(length(mNETseq_geneNames),7);
+%%
+for g=1:length(mNETseq_geneNames)
+    idx= find(strcmp(Cramer_Names(:,1),mNETseq_geneNames{g}));
+    if ~isempty(idx)
+        idx=idx(1);
+        metrics(g,5) = SynthDeg_Rates(idx,2); %Decay
+        metrics(g,6) = SynthDeg_Rates(idx,1); %Synthesis
+    end
+end
+%%
+for g=1:length(mNETseq_geneNames)
+    idx= find(strcmp(K562_names(:,1),mNETseq_geneNames{g}));
+    if ~isempty(idx)
+        idx=idx(1);
+        metrics(g,5) = K562_ttseq_metrics(idx,3); %Decay
+        metrics(g,6) = K562_ttseq_metrics(idx,4); %Synthesis
+    end
+end
+%%
+for g=1:length(mNETseq_geneNames)
+    idx = find(strcmp(RNAseq_GeneNames(:,1),mNETseq_geneNames{g}));
+    if~isempty(idx)
+        idx=idx(1);
+        metrics(g,1) = AR(idx);
+        %metrics(g,2) = sum(mNETseq_matrix(g,1:100)) / 100; %/sum(mNETseq_matrix(g,201:end)); %absolute window
+        metrics(g,2) = (mNETseq_Window_TotalReads(g,1)/mNETseqsim_Parameters(g,1)); % /(mNETseq_Window_TotalReads(g,2)/(mNETseq_GeneLength(g) - mNETseqsim_Parameters(g,1))) ; %Pause Metric
+        %metrics(g,2) = mNETseq_TPM(g,1) ;%/ mNETseq_GeneLength(g); %Total Reads
+        metrics(g,3) = Optimal_Parameters(g,15) / Optimal_Parameters(g,13) ; %Processivity
+        metrics(g,4) = mNETseqsim_Parameters(g,3) * (metrics(g,6) / mNETseq_GeneLength(g,1)) ; %Initiation Rate
+        metrics(g,7) = Optimal_Parameters(g,15); %number finished
+    end
+end
+
+Nandex= sum(isnan(metrics(:,1:7)),2);
+metrics = metrics(Nandex==0,:);
+%names = SCer_Names_Deg(Nandex==0,:);
+
+%%
+
+figure 
+subplot(1,2,1)
+scatter(log(mNETseq_Window_TotalReads(:,1)),log(mNETseq_Window_TotalReads(:,2)),'.')
+xlabel('log - Window 1 Reads')
+ylabel('log - Window 2 Reads')
+title(strcat('\rho = ',num2str(corr(log(mNETseq_Window_TotalReads(:,1)),log(mNETseq_Window_TotalReads(:,2)),'type','spearman','rows','complete'))),'fontsize',24);
+subplot(1,2,2)
+scatter(log(mNETseq_Window_TotalReads(:,1).*(Optimal_Parameters(:,15) ./ Optimal_Parameters(:,13))),log(mNETseq_Window_TotalReads(:,2)),'.')
+xlabel('log - Window 1 Reads x Processivity')
+ylabel('log - Window 2 Reads')
+title(strcat('\rho = ',num2str(corr(log(mNETseq_Window_TotalReads(:,1).*(Optimal_Parameters(:,15) ./ Optimal_Parameters(:,13))),log(mNETseq_Window_TotalReads(:,2)),'type','spearman','rows','complete'))),'fontsize',24);
+
+%% Plotting Metrics For Comparison
+
+%Using Cramer Data may account for some of the observed Differences
+%As in fewer overlapping genes
+%and different expression
+
+figure();
+subplot(1,3,1);
+scatter(log(metrics(:,2)),log(metrics(:,1)),'.');
+xlabel('log(mNET-seq TPM)','fontsize',16);
+ylabel('log(RNA counts)','fontsize',16);
+title(strcat('\rho = ',num2str(corr(log(metrics(:,2)),log(metrics(:,1)),'type','spearman','rows','complete'))),'fontsize',24);
+subplot(1,3,2);
+scatter(log(metrics(:,2).*metrics(:,3)),log(metrics(:,1)),'.');
+xlabel('log(mNET-seq TPM x Processivity)','fontsize',16);
+ylabel('log(RNA counts)','fontsize',16);
+title(strcat('\rho = ',num2str(corr(log(metrics(:,2).*metrics(:,3)),log(metrics(:,1)),'type','spearman','rows','complete'))),'fontsize',24);
+subplot(1,3,3);
+scatter(log((metrics(:,2).*metrics(:,3))./metrics(:,5)),log(metrics(:,1)),'.')
+xlabel('log( (mNET-seq TPM x Processivity)/Degredation )','fontsize',16);
+ylabel('log( RNA counts )','fontsize',16);
+title(strcat('\rho = ',num2str(corr(log((metrics(:,2).*metrics(:,3))./metrics(:,5)),log(metrics(:,1)),'type','spearman','rows','complete'))),'fontsize',24);
+
+figure();
+subplot(1,3,1);
+scatter(log(metrics(:,2)),log(metrics(:,1)),'.');
+xlabel('log(mNET-seq TPM)','fontsize',16);
+ylabel('log( RNA counts )','fontsize',16);
+title(strcat('\rho = ',num2str(corr(log(metrics(:,2)),log(metrics(:,1)),'type','spearman','rows','complete'))),'fontsize',24);
+subplot(1,3,2);
+scatter(log(metrics(:,2).*metrics (:,4)),log(metrics(:,1)),'.');
+xlabel('log(mNET-seq TPM x Initiation Rate )','fontsize',16);
+ylabel('log( RNA counts )','fontsize',16);
+title(strcat('\rho = ',num2str(corr(log(metrics(:,2).*metrics (:,4)),log(metrics(:,1)),'type','spearman','rows','complete'))),'fontsize',24);
+subplot(1,3,3);
+scatter(log((metrics(:,2).*metrics (:,4))./metrics(:,5)),log(metrics(:,1)),'.')
+xlabel('log( (mNET-seq TPM x Initiation Rate)/Degredation )','fontsize',16);
+ylabel('log( RNA counts )','fontsize',16);
+title(strcat('\rho = ',num2str(corr(log((metrics(:,2).*metrics (:,4))./metrics(:,5)),log(metrics(:,1)),'type','spearman','rows','complete'))),'fontsize',24);
