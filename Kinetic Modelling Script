@@ -1,0 +1,198 @@
+%% SNU-seq Kinetic Modelling
+
+importdata('/media/sedm5436/Elements/AKSEL_SP/Snu-seq_project_data/Lorentz_snuseq_HEK293T.mat') ;
+HEK293T_snuseq = ans ;
+
+% This is the snu-seq data (from Phil) But one can use any 'labelled' Fraction (i.e TT-seq)
+
+load /media/sedm5436/Elements/AKSEL_SP/Cramer_Raji_mNETseq_TTseq/GENCODE_Protein_Encoding_2019.mat
+genes = GENCODE_Protein_Encoding_2019(1:24,:);
+clear GENCODE_Protein_Encoding_2019 
+
+% These are the annotations I will use.
+
+hk_genes= split(importdata('/media/sedm5436/Elements/AKSEL_SP/Snu-seq_project_data/HK_genes'),' 	');
+hk_genes = hk_genes(:,1);
+
+%This is the list of housekeeping genes used as an internal control
+
+%% Calculating SNU-seq Enrichment (5MIN FRACTION)
+num_bins=1000 ;
+
+chosen_annotations = remove_overlapping(genes);
+
+% Select only genes > 1000bp;
+for chr=1:size(genes,1)
+    for strand=1:2
+        idx = abs(chosen_annotations{chr,strand}(:,1)-chosen_annotations{chr,strand}(:,2))>1000;
+        chosen_annotations{chr,strand} = chosen_annotations{chr,strand}(idx,:);
+        chosen_annotations{chr,strand+2} = chosen_annotations{chr,strand+2}(idx);
+    end
+end
+num_genes = 0;
+for chr=1:size(genes,1)
+    for strand=1:2
+        num_genes = num_genes + size(chosen_annotations{chr,strand},1);
+    end
+end
+
+tic;
+chosen_annotations = find_expressingGenes_intergenic(chosen_annotations,HEK293T_snuseq,1000);
+toc
+
+num_genes = 0;
+for chr=1:size(genes,1)
+    for strand=1:2
+        num_genes = num_genes + size(chosen_annotations{chr,strand},1);
+    end
+end
+
+HEK293T_snuseq_matrix = nan(num_genes,num_bins);
+HEK293T_snuseq_geneNames = cell(num_genes,1);
+sum_A = 1 ;
+k=1;
+for chr=1:size(chosen_annotations,1)
+    strand=1;
+    for gene=1:size(chosen_annotations{chr,strand},1)
+        
+        gene_length = abs(chosen_annotations{chr,strand}(gene,1)-chosen_annotations{chr,strand}(gene,2));
+        TU_start = min(chosen_annotations{chr,strand}(gene,1),chosen_annotations{chr,strand}(gene,2));
+        TU_end= max(chosen_annotations{chr,strand}(gene,1),chosen_annotations{chr,strand}(gene,2));
+        gene_reads = sum(HEK293T_snuseq{chr,strand}(TU_start:TU_end));
+        polymerase_reads = length(nonzeros(HEK293T_snuseq{chr,strand}(TU_start:TU_end)));
+        snuseq_ieRatio_names(k,1) = strtrim(chosen_annotations{chr,strand+2}(gene));
+        A(k,1) = ((gene_reads * (10^3))  / gene_length); 
+        sum_A = sum_A + A(k) ;
+
+        TU_length(k,1)=(abs(TU_start-TU_end));
+        
+        k=k+1;
+    end
+    
+    strand=2;
+    for gene=1:size(chosen_annotations{chr,strand},1)
+        
+        gene_length = abs(chosen_annotations{chr,strand}(gene,1)-chosen_annotations{chr,strand}(gene,2));
+        TU_start = min(chosen_annotations{chr,strand}(gene,1),chosen_annotations{chr,strand}(gene,2));
+        TU_end= max(chosen_annotations{chr,strand}(gene,1),chosen_annotations{chr,strand}(gene,2));
+        gene_reads = fliplr(sum(HEK293T_snuseq{chr,strand}(TU_start:TU_end)));
+        polymerase_reads = length(nonzeros(HEK293T_snuseq{chr,strand}(TU_start:TU_end)));
+        snuseq_ieRatio_names(k,1) = strtrim(chosen_annotations{chr,strand+2}(gene));
+        A(k,1) = ((gene_reads * (10^3)) / gene_length );
+        sum_A = sum_A + A(k) ;
+
+        TU_length(k,1)=(abs(TU_start-TU_end));
+        
+        k=k+1;
+    end
+    disp(chr);
+end
+
+A = (A ./ sum_A) .* 10^6 ; % TPM Calculation
+
+%% CALCULATING SNU-seq KINETIC PARAMETERS FROM RNA-seq AND SNU-seq
+%Whilst we saw for NET-seq that there was quite a good relationship between
+%reads here and mRNA seq, we may want to compare the read density of
+%snu-seq and mRNA counds
+
+hek293T_rna_seq = importdata('/media/sedm5436/Elements/AKSEL_SP/Snu-seq_project_data/E_GEOD_57027_raw_counts.txt');
+% This is the RNA-seq reads, or the 'Total' Fraction
+
+%snuseq_ieRatio = full(snuseq_ieRatio);
+A = full(A);
+
+AR_sum = 1;
+for g=1:length(snuseq_ieRatio)
+    idx= find(strcmp(hek293T_rna_seq.textdata(2:end,2),snuseq_ieRatio_names{g}));
+    if ~isempty(idx)
+        idx=idx(1);
+        AR(g,1) = (mean(hek293T_rna_seq.data(idx,[13 18 5 2 14 7]),2) .* 10^3) / TU_length(g); %RNA Counts in FKPM
+        AR_sum = AR_sum + AR(g,1);
+
+    end
+end
+
+AR = (AR ./ AR_sum) .* 10^6 ; % TPM Calculation
+
+for g=1:length(snuseq_ieRatio)
+    idx= find(strcmp(hek293T_rna_seq.textdata(2:end,2),snuseq_ieRatio_names{g}));
+    if ~isempty(idx)
+        idx=idx(1);
+        %HEK293T_metrics(g,1) = snuseq_ieRatio_names(g);
+        HEK293T_snuseq_metrics(g,1) = A(g,1); %Snuseq Normalised Reads
+        %HEK293T_metrics(g,2) = mean(hek293T_rna_seq.data(idx,[13 18 5 2 14 7]),2) / TU_length(g); %RNA Counts in FKPM
+        HEK293T_snuseq_metrics(g,2) = AR(g,1);
+        HEK293T_snuseq_metrics(g,3) = -(1/10)*log(1-(HEK293T_snuseq_metrics(g,1)/HEK293T_snuseq_metrics(g,2)));% Decay Rates
+        HEK293T_snuseq_metrics(g,4) = HEK293T_snuseq_metrics(g,2) * HEK293T_snuseq_metrics(g,3);%Synthesis Rates
+
+    end
+end
+
+HEK293T_snuseq_metrics = real(HEK293T_snuseq_metrics) ;
+HEK293T_snuseq_metrics = abs(HEK293T_snuseq_metrics) ;
+index= NaN(length(HEK293T_snuseq_metrics));
+for g = 1:length(HEK293T_snuseq_metrics)
+    if isnan(HEK293T_snuseq_metrics (g,:)) == 0 & isinf(HEK293T_snuseq_metrics (g,:)) == 0 & ~HEK293T_snuseq_metrics(g,:)==0
+        index(g,1) = 0;
+    else
+        index(g,1) = 1;
+    end
+end
+
+HEK293T_snuseq_metrics = HEK293T_snuseq_metrics(index==0,:);
+snuseq_names = snuseq_ieRatio_names(index==0,:);
+TU_length = TU_length(index==0,:);
+
+save_directory='/media/sedm5436/Elements/AKSEL_SP/Snu-seq_project_data/Metrics/';
+save([save_directory 'HEK293T_snuseq_metrics.mat'],'HEK293T_snuseq_metrics');
+save([save_directory 'snuseq_names.mat'],'snuseq_names');
+
+%% MODELLING RELATIONSHIP BETWEEN SNUSEQ DENSITY AND RNASEQ
+
+figure
+scatterhist(log(HEK293T_snuseq_metrics(:,1)),log(HEK293T_snuseq_metrics(:,2)),'Marker','.')
+xlabel('log - SnuSeq Density','fontsize',24)
+ylabel('log - RNAseq Counts','fontsize',24)
+title(strcat('\rho = ',num2str(corr(log(HEK293T_snuseq_metrics(:,1)),log(HEK293T_snuseq_metrics(:,2)),'type','spearman','rows','complete'))),'fontsize',24);
+
+figure
+scatterhist(log(HEK293T_snuseq_metrics(:,4)),log(HEK293T_snuseq_metrics(:,3)),'Marker','.')
+xlabel('log - Syntheis Rates','fontsize',24)
+ylabel('log - Decay Rates','fontsize',24)
+title(strcat('\rho = ',num2str(corr(log(HEK293T_snuseq_metrics(:,4)),log(HEK293T_snuseq_metrics(:,3)),'type','spearman','rows','complete'))),'fontsize',24);
+
+figure
+histogram(log(HEK293T_snuseq_metrics(:,2)./HEK293T_snuseq_metrics(:,1)))
+xlabel('log - RNA-Seq / Snu-Seq ','fontsize',24)
+ylabel('Frequency','fontsize',24)
+
+%% DISTRIBUTION OF KINETIC PARAMETERS
+
+figure
+histogram(log(HEK293T_snuseq_metrics(:,3)),'DisplayName','Decay Rates')
+hold on
+histogram(log(HEK293T_snuseq_metrics(:,4)),'DisplayName','Synthesis Rates')
+xlabel('log - Rate','fontsize',24)
+ylabel('Frequency','fontsize',24)
+legend({'Decay Rates','Synthesis Rates'})
+
+figure
+scatter(log(HEK293T_snuseq_metrics(:,4)),log(HEK293T_snuseq_metrics(:,3)),'.')
+xlabel('log - Syntheis Rates','fontsize',24)
+ylabel('log - Decay Rates','fontsize',24)
+
+figure
+histogram(log(HEK293T_snuseq_metrics(:,4)./HEK293T_snuseq_metrics(:,3)))
+xlabel('log - Synthesis Rate / Decay Rate','fontsize',24)
+ylabel('Frequency','fontsize',24)
+
+figure
+subplot(1,2,1)
+scatter(log(HEK293T_snuseq_metrics(:,4)),log(HEK293T_snuseq_metrics(:,2)),'.')
+xlabel('log - Synthesis Rate','fontsize',24)
+ylabel('log - RNA Counts','fontsize',24)
+subplot(1,2,2)
+scatter(log(HEK293T_snuseq_metrics(:,3)),log(HEK293T_snuseq_metrics(:,2)),'.')
+xlabel('log - Decay Rate','fontsize',24)
+ylabel('log - RNA Counts','fontsize',24)
+
