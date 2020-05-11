@@ -1,0 +1,240 @@
+num_bins = 1000;
+sizeSelected_snuseq_HEK293T= importdata('/media/sedm5436/Elements/AKSEL_SP/Snu-seq_project_data/sizeSelected_SNUseq_HEK293T.mat');
+SNUseq_HEK293T = importdata('/media/sedm5436/Elements/AKSEL_SP/Snu-seq_project_data/Lorentz_snuseq_HEK293T.mat');
+% These are the observed data that we will fit to simulated data
+genes=importdata('/media/sedm5436/Elements/AKSEL_SP/Cramer_Raji_mNETseq_TTseq/GENCODE_Protein_Encoding_2019.mat');
+genes = genes(1:24,:) ;
+%These are the gene annotations from GENCODE
+%% 100bp matrix
+
+chosen_annotations = remove_overlapping(genes);
+
+% Select only genes > 1000bp;
+for chr=1:size(genes,1)
+    for strand=1:2
+        idx = abs(chosen_annotations{chr,strand}(:,1)-chosen_annotations{chr,strand}(:,2))>1000;
+        chosen_annotations{chr,strand} = chosen_annotations{chr,strand}(idx,:);
+        chosen_annotations{chr,strand+2} = chosen_annotations{chr,strand+2}(idx);
+    end
+end
+num_genes = 0;
+for chr=1:size(genes,1)
+    for strand=1:2
+        num_genes = num_genes + size(chosen_annotations{chr,strand},1);
+    end
+end
+
+tic;
+chosen_annotations = find_expressingGenes_intergenic(chosen_annotations,SNUseq_HEK293T,1000);
+toc
+
+num_genes = 0;
+for chr=1:size(genes,1)
+    for strand=1:2
+        num_genes = num_genes + size(chosen_annotations{chr,strand},1);
+    end
+end
+
+HEK293T_sizeSelected_snuseq_matrix = nan(num_genes,num_bins);
+HEK293T_snuseq_matrix = nan(num_genes,num_bins);
+HEK293T_sizeSelected_snuseq_geneNames = cell(num_genes,1);
+
+k=1;
+for chr=1:size(genes,1)
+    strand=1;
+    for gene=1:size(chosen_annotations{chr,strand},1)
+        gene_length = abs(chosen_annotations{chr,strand}(gene,1)-chosen_annotations{chr,strand}(gene,2));
+        TU_start = min(chosen_annotations{chr,strand}(gene,1),chosen_annotations{chr,strand}(gene,2));
+        TU_end= max(chosen_annotations{chr,strand}(gene,1),chosen_annotations{chr,strand}(gene,2));
+        HEK293T_sizeSelected_snuseq_matrix(k,1:num_bins)=bin_data(sizeSelected_snuseq_HEK293T{chr,strand}(TU_start:TU_start+999)',num_bins);
+        HEK293T_sizeSelected_snuseq_geneNames{k}=chosen_annotations{chr,strand+2}{gene};
+        HEK293T_snuseq_matrix(k,1:num_bins)=bin_data(SNUseq_HEK293T{chr,strand}(TU_start:TU_start+999)',num_bins);
+        k=k+1;
+        
+    end
+    
+    strand=2;
+    for gene=1:size(chosen_annotations{chr,strand},1)
+        gene_length = abs(chosen_annotations{chr,strand}(gene,1)-chosen_annotations{chr,strand}(gene,2));
+        TU_start = min(chosen_annotations{chr,strand}(gene,1),chosen_annotations{chr,strand}(gene,2));
+        TU_end= max(chosen_annotations{chr,strand}(gene,1),chosen_annotations{chr,strand}(gene,2));
+        HEK293T_sizeSelected_snuseq_matrix(k,1:num_bins)=bin_data(fliplr(sizeSelected_snuseq_HEK293T{chr,strand}(TU_end-999:TU_end)'),num_bins);
+        HEK293T_sizeSelected_snuseq_geneNames{k}=chosen_annotations{chr,strand+2}{gene};
+        HEK293T_snuseq_matrix(k,1:num_bins)=bin_data(fliplr(SNUseq_HEK293T{chr,strand}(TU_end-999:TU_end)'),num_bins);
+        k=k+1;
+    end
+    disp(chr);
+end
+
+disp('Genes Selected')
+%Here, we now have a Binned Matrix representing reads around the TSS
+%% Simulation of HeLa Cells
+
+load model_names.mat;                                                     %/Elements/TOM_BROWN/NETSeq_simulator/compare_paramsAllGenes/
+load model_complexities.mat;
+
+%Remove negative values
+for i=1:size(HEK293T_sizeSelected_snuseq_matrix,1)
+    HEK293T_sizeSelected_snuseq_matrix(i,HEK293T_sizeSelected_snuseq_matrix(i,:)<0)=0;
+    HEK293T_snuseq_matrix(i,HEK293T_snuseq_matrix(i,:)<0)=0;
+end
+%Bin raw data
+sizeSelected_SNUseq_matrixBinned = zeros(size(HEK293T_sizeSelected_snuseq_matrix,1),100);
+HEK293T_snuseq_matrixBinned = zeros(size(HEK293T_snuseq_matrix,1),100);
+
+for n=1:100
+    sizeSelected_SNUseq_matrixBinned(:,n)=sum(HEK293T_sizeSelected_snuseq_matrix(:,1+(n-1)*10:n*10),2);
+    HEK293T_snuseq_matrixBinned(:,n)=sum(HEK293T_snuseq_matrix(:,1+(n-1)*10:n*10),2);
+end
+
+HEK293T_sizeSelected_snuseq_matrixBinnedNorm=bsxfun(@rdivide,sizeSelected_SNUseq_matrixBinned,sum(sizeSelected_SNUseq_matrixBinned,2));
+HEK293T_snuseq_matrixBinnedNorm=bsxfun(@rdivide,HEK293T_snuseq_matrixBinned,sum(HEK293T_snuseq_matrixBinned,2));
+HEK293T_sizeSelected_snuseq_matrixBinnedCumsum = cumsum(HEK293T_sizeSelected_snuseq_matrixBinnedNorm,2);
+HEK293T_sizeSelected_snuseqmodel_likelihoodsBinned = cell(size(model_names));
+HEK293T_sizeSelected_snuseqGeneParamsBinned = cell(size(model_names));
+HEK293T_sizeSelected_snuseqBestFitBinned = cell(size(model_names));
+HEK293T_sizeSelected_snuseqResiduals = cell(size(model_names));
+%% TEST METAGENE
+
+nandex = nan(num_genes,1);
+for g = 1:length(HEK293T_sizeSelected_snuseq_matrixBinnedNorm)
+    if isnan(HEK293T_sizeSelected_snuseq_matrixBinnedNorm(g,:)) == 1
+        nandex(g,1) = 1 ;
+    else
+        nandex(g,1) = 0 ;
+    end
+end
+
+Cleaned_HEK293T_sizeSelected_snuseq_matrixBinnedNorm = HEK293T_sizeSelected_snuseq_matrixBinnedNorm(nandex==0,:);
+Cleaned_Names = HEK293T_sizeSelected_snuseq_geneNames (nandex==0,:);
+
+figure
+plot(nanmean(Cleaned_HEK293T_sizeSelected_snuseq_matrixBinnedNorm))
+hold on
+plot(nanmean(HEK293T_snuseq_matrixBinnedNorm))
+xlabel('Coordinate')
+ylabel('Reads')
+
+no_readPenalty = 1000;
+
+load model_names
+load model_complexities 
+
+disp('Observed Curves Generated')
+%% CURVE FITTING
+
+for m=1:length(model_names)
+    tic;
+    model_dir = strcat('/media/sedm5436/Elements/TOM_BROWN/NETSeq_simulator/',model_names{m});
+    cd(model_dir);
+    try
+        %load all_PolIIDistsBinned; % Use These for Fitting to NET-seq Data
+        %load model_parameterNames;
+        load moving_PolIIDistsBinned; % Use These For Fitting SNU-seq Data
+        load parameter_values;
+        
+        moving_PolIIDistsBinned=bsxfun(@rdivide,moving_PolIIDistsBinned,sum(moving_PolIIDistsBinned,2));
+        moving_PolIIDistsBinned(isnan(moving_PolIIDistsBinned))=-Inf;
+        HEK293T_sizeSelected_snuseqmodel_likelihoodsBinned{m} = zeros(size(sizeSelected_SNUseq_matrixBinned,1),1);
+        HEK293T_sizeSelected_snuseqGeneParamsBinned{m} = zeros(size(sizeSelected_SNUseq_matrixBinned,1),size(parameter_values,2));
+        HEK293T_sizeSelected_snuseqBestFitBinned{m} = zeros(size(sizeSelected_SNUseq_matrixBinned,1),125);
+        moving_PolIIDistsBinnedcumsum = cumsum(moving_PolIIDistsBinned(:,26:125),2);
+        
+        for gene=1:size(sizeSelected_SNUseq_matrixBinned,1)
+            
+            CDF_diffs = bsxfun(@minus,moving_PolIIDistsBinnedcumsum,HEK293T_sizeSelected_snuseq_matrixBinnedCumsum(gene,:));
+            KS_stat = max(abs(CDF_diffs),[],2);
+            [~,ks_idx] = min(KS_stat);
+            % This is the KS-test based fitting method 
+            
+            residuals = moving_PolIIDistsBinned(:,26:125)-HEK293T_sizeSelected_snuseq_matrixBinnedNorm(gene,:);
+            %residuals_squared = (residuals).^ 2 ;
+            %summed_squares = sum(residuals_squared,2) ;
+            %[~,lsq_idx] = min(summed_squares);
+            % This is the least squares method of Curve Fitting (residuals taken here)
+                    
+            likelihood_vec = sizeSelected_SNUseq_matrixBinned(gene,:).*log(moving_PolIIDistsBinned(ks_idx,26:125));
+            likelihood_vec(isnan(likelihood_vec))=0;
+            num_inf = sum(isinf(likelihood_vec));
+            likelihood_vec(isinf(likelihood_vec))=0;
+            max_likelihood = sum(likelihood_vec)-(num_inf*no_readPenalty);
+            
+            HEK293T_sizeSelected_snuseqResiduals{m}(gene,:) = residuals(ks_idx,:) ;
+            HEK293T_sizeSelected_snuseqmodel_likelihoodsBinned{m}(gene)=max_likelihood;
+            HEK293T_sizeSelected_snuseqGeneParamsBinned{m}(gene,:) = parameter_values(ks_idx,:);
+            HEK293T_sizeSelected_snuseqBestFitBinned{m}(gene,:) = moving_PolIIDistsBinned(ks_idx,:);
+            
+        end
+    end
+    save_directory='/media/sedm5436/Elements/AKSEL_SP/Snu-seq_project_data/';
+    save([save_directory 'HEK293T_sizeSelected_snuseqResiduals.mat'],'HEK293T_sizeSelected_snuseqResiduals');
+    save([save_directory 'HEK293T_sizeSelected_snuseqmodel_likelihoodsBinned.mat'],'HEK293T_sizeSelected_snuseqmodel_likelihoodsBinned');
+    save([save_directory 'HEK293T_sizeSelected_snuseqGeneParamsBinned.mat'],'HEK293T_sizeSelected_snuseqGeneParamsBinned');
+    save([save_directory 'HEK293T_sizeSelected_snuseqBestFitBinned.mat'],'HEK293T_sizeSelected_snuseqBestFitBinned');
+    disp(m);
+    toc
+end
+
+disp('Matching Curves Selected')
+%% BIC OF DIFFERENT MODELS
+
+load /media/sedm5436/Elements/AKSEL_SP/Snu-seq_project_data/HEK293T_sizeSelected_snuseqBestFitBinned.mat
+load /media/sedm5436/Elements/AKSEL_SP/Snu-seq_project_data/HEK293T_sizeSelected_snuseqmodel_likelihoodsBinned.mat
+
+HEK293T_snuseqBIC=zeros(length(model_names),1);
+
+for m=1:length(model_names)
+    if ~ isempty(model_complexities{m})
+        HEK293T_snuseqBIC(m,1) = log(size(HEK293T_sizeSelected_snuseqmodel_likelihoodsBinned{m},1))*model_complexities{m} - 2*sum(HEK293T_sizeSelected_snuseqmodel_likelihoodsBinned{m});
+    else
+        HEK293T_snuseqBIC(m,1) = NaN ;
+    end
+end
+
+figure();
+plot(1:length(HEK293T_snuseqBIC),HEK293T_snuseqBIC,'bx','markersize',20);
+ylabel('Bayesian Information Criteria','fontsize',24);
+title('HEK293T Size Selected SNU-seq Model Fits','fontsize',24);
+ax=gca;
+ax.XTick=1:length(HEK293T_snuseqBIC);
+ax.XTickLabel=model_names;
+xtickangle(45);
+
+HEK293T_snuseqBIC(find(isinf(HEK293T_snuseqBIC)))=nan;
+[~,WT_SNUseq_model] = min(HEK293T_snuseqBIC);
+
+HEK293T_sizeSelected_snuseq_matrixBinnedNorm = bsxfun(@rdivide,sizeSelected_SNUseq_matrixBinned,sum(sizeSelected_SNUseq_matrixBinned,2));
+HEK293T_sizeSelected_snuseqBestFitBinned= bsxfun(@rdivide,HEK293T_sizeSelected_snuseqBestFitBinned{WT_SNUseq_model},sum(HEK293T_sizeSelected_snuseqBestFitBinned{WT_SNUseq_model},2));
+%This is the BIC Plot showing which is the best fit model
+
+%% PLOT COMPARISON OF SIMULATED AND TEST METAGENE
+
+figure();
+hold on;
+%plot(26:125,nanmean(bsxfun(@rdivide,HEK293T_snuseq_matrixBinnedNorm(1:gene-1,:),sum(HEK293T_snuseq_matrixBinnedNorm(1:gene-1,:),2)),1),'c','linewidth',10,'DisplayName','Simulated Curve');
+plot(26:125,nanmean(HEK293T_sizeSelected_snuseq_matrixBinnedNorm),'c','linewidth',10,'DisplayName','Simulated Curve')
+plot(mean(HEK293T_sizeSelected_snuseqBestFitBinned(1:gene-1,:),1),'k','linewidth',5,'DisplayName','Observed Curve');
+title('Metagene profiles of best simulated SNU-seq fits, HEK293T Cells','fontsize',24);
+ylabel('Mean simulated SNU-seq reads (AU))','fontsize',24);
+%xlim([1 125]);
+ax=gca;
+ax.XTick=[1 25 75 120];
+ax.XTickLabel={'-250','TSS','+500','+1,000'};
+ax.FontSize=24;
+legend({'Observed Curve','Simulated Curve'})
+%This is the metagene plot that compares the simulated curve and the observed curve
+
+%% RESIDUAL PLOTS
+residuals = importdata('/media/sedm5436/Elements/AKSEL_SP/Snu-seq_project_data/HEK293T_sizeSelected_snuseqResiduals.mat');
+
+figure
+%plot(nanmean(residuals{WT_SNUseq_model}),'rx','markersize',20);
+plot(nanmean(residuals{7}),'rx','markersize',20);
+ylabel('Residual','fontsize',24);
+title('Residual Plot of K-S Fitting','fontsize',24);
+ax1=gca;
+ax1.XTick=[1 25 50 75 100];
+ax1.XTickLabel={'TSS','+250','+500','+750','+1,000'};
+ax1.FontSize=24;
+
+%This is the residual plot
