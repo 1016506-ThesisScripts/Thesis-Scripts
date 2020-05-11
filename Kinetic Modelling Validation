@@ -1,0 +1,142 @@
+%% Cramer vs Cramer
+Cramer_TTseq_Data = split(importdata ('/media/sedm5436/Elements/AKSEL_SP/Cramer Raw Data/Cramer_transcript.annotation.gtf'),[";","	","	.	"]);
+Cramer_TTseq_Data = split(importdata ('/media/sedm5436/Elements/AKSEL_SP/Cramer Raw Data/Cramer_transcript.annotation.gtf'),[";","	","	.	"]);
+Protein_Coding_Cramer_Data = Cramer_TTseq_Data(strcmp(Cramer_TTseq_Data(:,11),'GENCODE "TRUE"')& strcmp(Cramer_TTseq_Data(:,3),'protein_coding'),:) ;
+Cramer_SynthDeg_Rates= str2double(erase(Protein_Coding_Cramer_Data(:,9:10),["decay rate","synthesis rate",""""]));
+load('Cramer_Names_Noblankspace.mat')
+
+HEK293T_metrics = importdata('/media/sedm5436/Elements/AKSEL_SP/Snu-seq_project_data/Metrics/HEK293T_snuseq_metrics.mat');
+snuseq_names = importdata('/media/sedm5436/Elements/AKSEL_SP/Snu-seq_project_data/Metrics/snuseq_names.mat');
+K562_metrics = importdata('/media/sedm5436/Elements/AKSEL_SP/Snu-seq_project_data/Metrics/K562_ttseq_metrics.mat');
+K562_names = importdata('/media/sedm5436/Elements/AKSEL_SP/Snu-seq_project_data/Metrics/K562_names.mat');
+fs=24 ;
+
+%% GENERATING A COMMON GENES MATRIX
+
+common_genes = nan(length(Cramer_Names),4);
+reads = nan(length(Cramer_Names),4);
+
+for g=1: length(Cramer_Names)
+     idx= find(strcmp(K562_names(:,1),Cramer_Names{g}));
+    if ~isempty(idx)
+        idx=idx(1);
+        common_genes(g,1:2) = K562_metrics(idx,3:4); % Other Norm
+        reads(g,1) = K562_metrics(idx,1) ;
+        common_genes(g,3:4) = Cramer_SynthDeg_Rates(g,1:2);
+    end
+end
+index= NaN(length(common_genes));
+for g = 1:length(common_genes)
+    if isnan(common_genes(g,:)) == 0 & isinf(common_genes(g,:)) == 0
+        index(g,1) = 0;
+    else
+        index(g,1) = 1;
+    end
+end
+common_genes = common_genes(index==0,:);
+common_gene_names = Cramer_Names(index==0);
+reads = reads(index==0,:);
+
+Common_Genes = nan(length(snuseq_names),4);
+Reads = nan(length(snuseq_names),2);
+for g=1: length(snuseq_names)
+     idx= find(strcmp(common_gene_names(:,1),snuseq_names{g}));
+    if ~isempty(idx)
+        idx=idx(1);
+        Common_Genes(g,1:2) = HEK293T_metrics(g,3:4); %HEK293T Parameters
+        Common_Genes(g,3:6) = common_genes(idx,1:4); %K562 Parameters
+        Reads(g,1) = reads(idx,1);
+        Reads(g,2) = HEK293T_metrics(g,1);
+    end
+end
+index= NaN(length(Common_Genes));
+for g = 1:length(Common_Genes)
+    if isnan(Common_Genes(g,:)) == 0 & isinf(Common_Genes(g,:)) == 0
+        index(g,1) = 0;
+    else
+        index(g,1) = 1;
+    end
+end
+
+% Column 1 - SNU-seq Decay
+% Column 2 - SNU-seq Synthesis
+% Column 3 - TT-seq Decay (Our)
+% Column 4 - TT-seq Synthesis (Our)
+% Column 5 - TT-seq Synthesis (Published)
+% Column 6 - TT-seq Decay (Published)
+
+Common_Genes = Common_Genes(index==0,:);
+Common_Genes_Names = snuseq_names(index==0);
+Reads = Reads(index==0,:);
+
+%% CRAMER DISTRIBUTIONS
+
+figure
+histogram(log(Cramer_SynthDeg_Rates(:,1)),'DisplayName','Synthesis Rate')
+hold on
+histogram(log(Cramer_SynthDeg_Rates(:,2)),'DisplayName','Decay Rate')
+xlabel('log - Rate','fontsize',24)
+ylabel('Frequency','fontsize',24)
+title('Histogram Showing the Distribution of Published Kinetic Parameters','fontsize',24)
+
+%% PLOTTING SNU-seq WITH TT-seq SAME NORMALIZATION PROCEDURE
+
+figure
+
+subplot(1,3,1)
+scatter(log(Common_Genes(:,1)),log(Common_Genes(:,3)),'.')
+xlabel('log (SNU-seq Decay Rate)','fontsize',fs)
+ylabel('log (TT-seq Decay Rate)','fontsize',fs)
+title(strcat('\rho = ',num2str(corr(log(Common_Genes(:,1)),log(Common_Genes(:,2)),'type','spearman','rows','complete'))),'fontsize',24);
+subplot(1,3,2)
+scatter(log(Common_Genes(:,2)),log(Common_Genes(:,4)),'.')
+xlabel('log (SNU-seq Synthesis Rate)','fontsize',fs)
+ylabel('log (TT-seq Synthesis Rate)','fontsize',fs)
+title(strcat('\rho = ',num2str(corr(log(Common_Genes(:,2)),log(Common_Genes(:,4)),'type','spearman','rows','complete'))),'fontsize',24);
+subplot(1,3,3)
+scatter(log(Common_Genes(:,2)./Common_Genes(:,1)),log(Common_Genes(:,4)./Common_Genes(:,3)),'.')
+xlabel('log (SNU-seq Synthesis Rate / SNU-seq Decay Rate)','fontsize',fs)
+ylabel('log (TT-seq Synthesis Rate / Published TT-seq Decay Rate)','fontsize',fs)
+title(strcat('\rho = ',num2str(corr(log(Common_Genes(:,2)./Common_Genes(:,1)),log(Common_Genes(:,4)./Common_Genes(:,3)),'type','spearman','rows','complete'))),'fontsize',24);
+
+%% PLOTTING SNU-seq WITH PUBLISHED RATES
+
+figure
+subplot(1,3,1)
+scatter(log(Common_Genes(:,1)),log(Common_Genes(:,6)),'.')
+xlabel('log (SNU-seq Decay Rate)','fontsize',fs)
+ylabel('log (Published TT-seq Decay Rate)','fontsize',fs)
+title(strcat('\rho = ',num2str(corr(log(Common_Genes(:,1)),log(Common_Genes(:,6)),'type','spearman','rows','complete'))),'fontsize',24);
+subplot(1,3,2)
+scatter(log(Common_Genes(:,2)),log(Common_Genes(:,5)),'.')
+xlabel('log (SNU-seq Synthesis Rate)','fontsize',fs)
+ylabel('log (Published TT-seq Synthesis Rate)','fontsize',fs)
+title(strcat('\rho = ',num2str(corr(log(Common_Genes(:,2)),log(Common_Genes(:,5)),'type','spearman','rows','complete'))),'fontsize',24);
+subplot(1,3,3)
+scatter(log(Common_Genes(:,2)./Common_Genes(:,1)),log(Common_Genes(:,5)./Common_Genes(:,6)),'.')
+xlabel('log (SNU-seq Synthesis Rate / SNU-seq Decay Rate)','fontsize',fs)
+ylabel('log (Published TT-seq Synthesis Rate / Published TT-seq Decay Rate)','fontsize',fs)
+title(strcat('\rho = ',num2str(corr(log(Common_Genes(:,2)./Common_Genes(:,1)),log(Common_Genes(:,5)./Common_Genes(:,6)),'type','spearman','rows','complete'))),'fontsize',24);
+
+%% PLOTTING TT-seq VS TT-seq
+
+figure
+subplot(1,3,1)
+scatter(log(Common_Genes(:,3)),log(Common_Genes(:,6)),'.')
+xlabel('log (TT-seq Decay Rate)','fontsize',fs)
+ylabel('log (Published TT-seq Decay Rate)','fontsize',fs)
+title(strcat('\rho = ',num2str(corr(log(Common_Genes(:,3)),log(Common_Genes(:,6)),'type','spearman','rows','complete'))),'fontsize',24);
+subplot(1,3,2)
+scatter(log(Common_Genes(:,4)),log(Common_Genes(:,5)),'.')
+xlabel('log (TT-seq Synthesis Rate)','fontsize',fs)
+ylabel('log (Published TT-seq Synthesis Rate)','fontsize',fs)
+title(strcat('\rho = ',num2str(corr(log(Common_Genes(:,4)),log(Common_Genes(:,5)),'type','spearman','rows','complete'))),'fontsize',24);
+subplot(1,3,3)
+scatter(log(Common_Genes(:,4)./Common_Genes(:,3)),log(Common_Genes(:,5)./Common_Genes(:,6)),'.')
+xlabel('log (TT-seq Synthesis Rate / TT-seq Decay Rate)','fontsize',fs)
+ylabel('log (Published TT-seq Synthesis Rate / Published TT-seq Decay Rate)','fontsize',fs)
+title(strcat('\rho = ',num2str(corr(log(Common_Genes(:,4)./Common_Genes(:,3)),log(Common_Genes(:,5)./Common_Genes(:,6)),'type','spearman','rows','complete'))),'fontsize',24);
+
+save_directory='/media/sedm5436/Elements/AKSEL_SP/Snu-seq_project_data/Metrics/';
+save([save_directory 'Common_Genes.mat'],'Common_Genes');
+save([save_directory 'Common_Genes_Names.mat'],'Common_Genes_Names');
